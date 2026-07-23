@@ -15,6 +15,10 @@
 # swap into place and stale-file cleanup happen in the target device's own
 # initramfs (package/batocera/boot/batocera-initramfs/init) on its NEXT boot.
 #
+# If a previously staged update was never applied (target wasn't booted since
+# the last run), it's discarded before staging the new one — it's just dead
+# weight at that point, not a rollback path worth keeping.
+#
 # Usage: ./update-usb.sh [mountpoint] [--dry-run]
 #   TARGET=<buildroot target>   (env var, default: x86_64-arcade)
 
@@ -103,10 +107,43 @@ if [ "$TARBALL_BOARD" != "$TARGET_BOARD" ]; then
     fi
 fi
 
+# --- discard any unconsumed staged update from a previous run --------------
+# boot/*.update only exists if the target hasn't booted since it was last
+# staged — a real boot always renames it away via batocera-initramfs/init
+# (init:64-78). Leaving it around just wastes space for no benefit: this
+# run's tar is about to write a fresh .update of its own anyway.
+
+STALE_UPDATE_BYTES=0
+STALE_UPDATE_PATHS=()
+for img in batocera rufomaculata; do
+    f="${MOUNTPOINT}/boot/${img}.update"
+    if [ -f "$f" ]; then
+        STALE_UPDATE_PATHS+=("$f")
+        STALE_UPDATE_BYTES=$((STALE_UPDATE_BYTES + $(stat -c%s "$f")))
+    fi
+done
+
+if [ "${#STALE_UPDATE_PATHS[@]}" -gt 0 ]; then
+    echo "Found staged update(s) the target hasn't booted yet (never applied, safe to discard):"
+    printf '  - %s\n' "${STALE_UPDATE_PATHS[@]}"
+    if [ "$DRY_RUN" -eq 1 ]; then
+        echo "--dry-run: would delete these before copying the new build."
+    else
+        rm -f "${STALE_UPDATE_PATHS[@]}"
+        sync
+        echo "Deleted stale staged update(s)."
+    fi
+    echo
+fi
+
 # --- verify enough free space, same as batocera-upgrade's check_freespace --
 
 UNCOMPRESSED_MB=$(($(xz --robot -l "$BOOT_TARBALL" | tail -1 | awk '{print $5}') / 1024 / 1024))
 FREE_MB=$(df -m "$MOUNTPOINT" | tail -1 | awk '{print $4}')
+if [ "$DRY_RUN" -eq 1 ] && [ "$STALE_UPDATE_BYTES" -gt 0 ]; then
+    # not actually deleted yet in dry-run, so credit the space back manually
+    FREE_MB=$((FREE_MB + STALE_UPDATE_BYTES / 1024 / 1024))
+fi
 if [ "$((UNCOMPRESSED_MB + 10))" -gt "$FREE_MB" ]; then
     echo "error: not enough space on ${MOUNTPOINT} to extract this build" >&2
     echo "  required: $((UNCOMPRESSED_MB + 10))MB | available: ${FREE_MB}MB" >&2
