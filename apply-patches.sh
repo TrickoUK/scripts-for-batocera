@@ -1,13 +1,22 @@
 #!/bin/bash
 #
-# apply-patches.sh — bring the working tree's local Config.in patches
+# apply-patches.sh — bring the working tree's local patches
 # (board/batocera/x86/local-patches/*.patch) up to date.
 #
 # These patches wire fork-only features into files this repo shares with
-# upstream batocera (e.g. the top-level Config.in) without committing to
-# them directly, so the shared files stay byte-for-byte upstream-clean
-# and merges from batocera-linux:master don't conflict. See "The local
-# Config.in patches" in USER-INSTRUCTIONS.md.
+# upstream batocera (e.g. the top-level Config.in, or configgen's
+# importer.py) without committing to them directly, so the shared files
+# stay byte-for-byte upstream-clean and merges from batocera-linux:master
+# don't conflict. A single patch file may touch more than one shared file
+# for the same feature (e.g. standalone-mame.patch covers both Config.in
+# and importer.py) — git apply treats that as one atomic unit. See "The
+# local Config.in patches" in USER-INSTRUCTIONS.md.
+#
+# Not everything that looks like it needs this treatment does: some
+# shared files (es_systems.yml's per-system emulators: sub-block, for
+# one) are validated-but-unused by the code that reads them. Check
+# whether an edit is actually load-bearing before reaching for a patch —
+# dead code doesn't need to be preserved at all, patched or committed.
 #
 # Safe to re-run any time: each patch is checked before acting, so an
 # already-applied patch is left alone and only missing ones get applied.
