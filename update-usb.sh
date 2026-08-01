@@ -47,18 +47,29 @@ done
 
 # --- locate the build output ---------------------------------------------
 
+# The arch subdir under images/batocera/images/ is named after whatever
+# BR2_PACKAGE_BATOCERA_TARGET_* was selected at build time — "x86_64" for a
+# baseline build, "x86-64-v3" for a zen3/v3 one. Same TARGET output tree can
+# end up holding leftovers from both if the board file's arch was switched
+# between builds without an intervening clean (see my-docs/AGENTS.md), so
+# don't hardcode either name — just take whichever boot.tar.xz is newest.
 BOOT_TARBALL_CANDIDATES=$(find "${REPO_ROOT}/output/${TARGET}/images/batocera/images" \
     -mindepth 2 -maxdepth 2 -name boot.tar.xz 2>/dev/null)
 if [ -z "$BOOT_TARBALL_CANDIDATES" ]; then
     echo "error: no boot.tar.xz found under output/${TARGET}/images/batocera/images/ — run a build first" >&2
     exit 1
 fi
-if [ "$(echo "$BOOT_TARBALL_CANDIDATES" | wc -l)" -gt 1 ]; then
-    echo "error: multiple boot.tar.xz candidates found under output/${TARGET}/images/batocera/images/ — refusing to guess:" >&2
-    echo "$BOOT_TARBALL_CANDIDATES" | sed 's/^/  - /' >&2
-    exit 1
+mapfile -t BOOT_TARBALL_ARR <<< "$BOOT_TARBALL_CANDIDATES"
+if [ "${#BOOT_TARBALL_ARR[@]}" -gt 1 ]; then
+    BOOT_TARBALL=$(printf '%s\n' "${BOOT_TARBALL_ARR[@]}" | xargs -d '\n' ls -t | head -1)
+    echo "Multiple arch builds found under output/${TARGET}/images/batocera/images/ — using the newest:"
+    for c in "${BOOT_TARBALL_ARR[@]}"; do
+        if [ "$c" = "$BOOT_TARBALL" ]; then mark="->"; else mark="  "; fi
+        echo "  ${mark} ${c} ($(date -r "$c" '+%Y-%m-%d %H:%M'))"
+    done
+else
+    BOOT_TARBALL="${BOOT_TARBALL_ARR[0]}"
 fi
-BOOT_TARBALL="$BOOT_TARBALL_CANDIDATES"
 
 # --- verify the build output before trusting it ---------------------------
 
