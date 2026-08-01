@@ -19,22 +19,26 @@
 # the last run), it's discarded before staging the new one — it's just dead
 # weight at that point, not a rollback path worth keeping.
 #
-# Usage: ./update-usb.sh [mountpoint] [--dry-run]
-#   TARGET=<buildroot target>   (env var, default: x86_64-arcade)
+# Usage: ./update-usb.sh [mountpoint] [--dry-run] [--auto]
+#   TARGET=<buildroot target>   (env var, default: x86_64-focused)
+#   --auto                      skip the confirmation prompt and proceed
 
 set -euo pipefail
 
-TARGET="${TARGET:-x86_64-arcade}"
+TARGET="${TARGET:-x86_64-focused}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 DRY_RUN=0
+AUTO=0
 MOUNTPOINT=""
 for arg in "$@"; do
     case "$arg" in
         --dry-run) DRY_RUN=1 ;;
+        --auto) AUTO=1 ;;
         -h|--help)
-            echo "Usage: $0 [mountpoint] [--dry-run]"
-            echo "  TARGET=<buildroot target>   env var, default: x86_64-arcade"
+            echo "Usage: $0 [mountpoint] [--dry-run] [--auto]"
+            echo "  TARGET=<buildroot target>   env var, default: x86_64-focused"
+            echo "  --auto                      skip the confirmation prompt and proceed"
             exit 0
             ;;
         *) MOUNTPOINT="$arg" ;;
@@ -175,11 +179,15 @@ if [ "$DRY_RUN" -eq 1 ]; then
     exit 0
 fi
 
-read -r -p "Overwrite system files on ${MOUNTPOINT} with this build? [y/N] " CONFIRM
-case "$CONFIRM" in
-    y|Y|yes|YES) ;;
-    *) echo "Aborted."; exit 1 ;;
-esac
+if [ "$AUTO" -eq 1 ]; then
+    echo "--auto: skipping confirmation, proceeding."
+else
+    read -r -p "Overwrite system files on ${MOUNTPOINT} with this build? [y/N] " CONFIRM
+    case "$CONFIRM" in
+        y|Y|yes|YES) ;;
+        *) echo "Aborted."; exit 1 ;;
+    esac
+fi
 
 # --- back up local settings, extract, restore ------------------------------
 
