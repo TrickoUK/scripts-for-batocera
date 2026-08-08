@@ -33,6 +33,19 @@
 #        - batocera-es-web-ui        (depends on batocera-emulationstation,
 #                                      same stale-snapshot risk one level
 #                                      further down the chain)
+#        - batocera-system           (writes /usr/share/batocera/batocera.version
+#                                      by shelling out to `git rev-parse --short
+#                                      HEAD` in its INSTALL_TARGET_CMDS recipe.
+#                                      Buildroot has no file-level dependency to
+#                                      notice "the git HEAD moved" — once this
+#                                      package's install stamp is satisfied it
+#                                      never re-runs, so batocera.version silently
+#                                      goes stale (confirmed: a build done here
+#                                      days after the commit it actually reflects
+#                                      still reported the old commit/date) unless
+#                                      explicitly dircleaned. Included here so
+#                                      every refresh keeps the shipped version
+#                                      string honest, not just the ES pipeline.
 #
 # This script only cleans — it deliberately does NOT build these packages
 # itself. Building is left to whatever full build you run afterwards, which
@@ -84,6 +97,7 @@ PACKAGES=(
 	batocera-es-system
 	batocera-emulationstation
 	batocera-es-web-ui
+	batocera-system
 )
 
 cd "${REPO_ROOT}"
