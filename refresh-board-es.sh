@@ -91,20 +91,79 @@ set -euo pipefail
 TARGET="${TARGET:-x86_64-focused}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Local-source (OVERRIDE_SRCDIR / python-src) packages have NO stamp dependency
+# on their own source changing, so a stale one silently ships old code. Found
+# the hard way 2026-09-19: python-batocera-common's stamp predated an upstream
+# merge, so the image shipped a batocera_common missing 8 modules that
+# batocera-launch imports (ImportError on every game launch) and the zen3
+# build died in batocera-labwc on the same cause. Everything that consumes
+# python-batocera-common must be refreshed with it, because under
+# BR2_PER_PACKAGE_DIRECTORIES each dependent holds its own snapshot copy.
+# dirclean of a package that isn't enabled on this board is a harmless no-op.
 PACKAGES=(
+	python-batocera-common
+	host-python-batocera-common
+	batocera-bezel-overlay
+	batocera-launch
 	batocera-configgen
 	host-batocera-es-system
 	batocera-es-system
 	batocera-emulationstation
 	batocera-es-web-ui
 	batocera-system
+	hotkeygen
+	batocera-led-handheld
+	batocera-labwc
+	host-batocera-labwc
+	# every batocera-launch-<emu> sub-package (all depend on python-batocera-common)
+	batocera-launch-cdogs batocera-launch-cgenius batocera-launch-dolphin
+	batocera-launch-drastic batocera-launch-fallout batocera-launch-flycast
+	batocera-launch-kodi batocera-launch-linuxloader batocera-launch-mupen64plus
+	batocera-launch-openjazz batocera-launch-openjk batocera-launch-openjkdf2
+	batocera-launch-openmohaa batocera-launch-pcsx2 batocera-launch-rpcs3
 )
+
+# Plus any other local-source (*-custom) package already in this board's build
+# dir, so a newly added python-src package can't be missed. libretro-mame is
+# excluded: it's OVERRIDE_SRCDIR too but a multi-GB, multi-hour rebuild that
+# has its own refresh path (`make libretro-mame-rebuild all`).
+if [ -d "${REPO_ROOT}/output/${TARGET}/build" ]; then
+	for d in "${REPO_ROOT}/output/${TARGET}/build"/*-custom; do
+		[ -d "$d" ] || continue
+		name="$(basename "$d" -custom)"
+		[ "$name" = "libretro-mame" ] && continue
+		case " ${PACKAGES[*]} " in *" ${name} "*) ;; *) PACKAGES+=("$name") ;; esac
+	done
+fi
 
 cd "${REPO_ROOT}"
 
 echo "==> Regenerating defconfig/config for target: ${TARGET}"
 make "${TARGET}-defconfig"
 make "${TARGET}-config" BATCH_MODE=1
+
+# In-repo "data" packages (empty <PKG>_SOURCE =, install straight from their own
+# package dir: desktopapps, scripts, udev rules, gun configs, ...). Their
+# per-package tree and .files-list.txt persist across builds, so a file the
+# package stopped installing (e.g. batocera-desktopapps' model2emu-config.desktop
+# after upstream dropped model2emu) keeps shipping forever unless the package is
+# dircleaned. All are tiny, so refresh them every time.
+DATA_PKGS="$(python3 - "${REPO_ROOT}" "${TARGET}" <<'PYEOF'
+import glob, os, re, sys
+root, target = sys.argv[1], sys.argv[2]
+built = set(os.listdir(f"{root}/output/{target}/per-package")) if os.path.isdir(f"{root}/output/{target}/per-package") else set()
+names = set()
+for mk in glob.glob(f"{root}/package/**/*.mk", recursive=True) + glob.glob(f"{root}/python-src/**/*.mk", recursive=True):
+    for m in re.finditer(r"^([A-Z0-9_]+)_SOURCE\s*[:?]?=\s*$", open(mk, errors="ignore").read(), re.M):
+        n = m.group(1).lower().replace("_", "-")
+        if n in built:
+            names.add(n)
+print(" ".join(sorted(names)))
+PYEOF
+)"
+for n in ${DATA_PKGS}; do
+	case " ${PACKAGES[*]} " in *" ${n} "*) ;; *) PACKAGES+=("$n") ;; esac
+done
 
 DIRCLEAN_CMD=""
 for pkg in "${PACKAGES[@]}"; do
@@ -115,6 +174,15 @@ echo "==> Dircleaning EmulationStation/configgen pipeline for target: ${TARGET}"
 echo "    Packages: ${PACKAGES[*]}"
 echo "    (dirclean only, no build — that happens on your next full build)"
 make "${TARGET}-build" BATCH_MODE=1 CMD="${DIRCLEAN_CMD}"
+
+# Buildroot's target-finalize only COPIES per-package trees into target/ and
+# never deletes, so files from earlier builds (deleted generators, old defaults
+# yml, retired .desktop entries) ship forever. Discovered 2026-09-19: ~60 stale
+# legacy generator dirs + model2emu leftovers in an image after the launcher
+# migration. Removing target/ makes the next build regenerate it purely from the
+# per-package trees (safe in per-package mode; target-finalize repopulates it).
+echo "==> Removing output/${TARGET}/target so it is regenerated cleanly"
+rm -rf "${REPO_ROOT}/output/${TARGET}/target"
 
 echo "==> Done. Cleaned output under output/${TARGET}/{staging,target,per-package}/."
 echo "    Build the full image yourself when ready, e.g.: make ${TARGET}-build"
