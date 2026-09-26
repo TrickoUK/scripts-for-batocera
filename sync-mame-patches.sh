@@ -19,7 +19,7 @@
 set -u
 
 PATCH_DIR="$(cd "$(dirname "$0")" && pwd)/package/batocera/emulators/retroarch/libretro/libretro-mame"
-FORK_DIR="/var/mnt/work/batocera-build/libretro-mame-fork"
+FORK_DIR="/var/mnt/work/batocera-build/libretro-mame"
 
 if [ ! -d "$FORK_DIR" ]; then
     echo "error: $FORK_DIR does not exist" >&2
