@@ -1,6 +1,24 @@
 #!/bin/bash
+#
+# Usage: ./mame-refresh.sh [--batch] [<rebuild.sh args>...]
+#   --batch, -b   non-interactive (no TTY) run, e.g. under nohup or an agent's
+#                 shell: passes BATCH_MODE=1 to the libretro-mame make and
+#                 --batch to rebuild.sh. A pre-exported BATCH_MODE=1 does the
+#                 same. Any other arguments go straight to rebuild.sh
+#                 (e.g. --quick). Pick the board with TARGET=<target>, which
+#                 both steps read (default zen3-focused).
 set -u
 cd "$(dirname "$0")" || exit 1
+
+BATCH_MODE="${BATCH_MODE:-}"
+REBUILD_ARGS=()
+for arg in "$@"; do
+    case "$arg" in
+        --batch|-b) BATCH_MODE=1 ;;
+        *) REBUILD_ARGS+=("$arg") ;;
+    esac
+done
+[ -n "$BATCH_MODE" ] && REBUILD_ARGS=(--batch "${REBUILD_ARGS[@]}")
 FORK_DIR="/var/mnt/work/batocera-build/libretro-mame"
 
 set -a
@@ -36,6 +54,6 @@ if [ -d "$BUILD_COPY" ]; then
 fi
 
 ./sync-mame-patches.sh
-make "${TARGET:-zen3-focused}-build" CMD="libretro-mame-rebuild" \
+make "${TARGET:-zen3-focused}-build" CMD="libretro-mame-rebuild" BATCH_MODE="$BATCH_MODE" \
     || fail "libretro-mame failed to compile (exit $?)"
-./rebuild.sh
+./rebuild.sh "${REBUILD_ARGS[@]}"

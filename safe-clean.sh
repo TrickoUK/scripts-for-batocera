@@ -14,6 +14,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# zen3-focused only since 2026-09-26 (output/x86_64-focused deleted; the
+# script's default also scans x86_64-focused and exits if its .config is
+# missing). A later --boards in "$@" overrides this.
 exec python3 "$SCRIPT_DIR/scripts/linux/cleanup_build_artifacts.py" \
+    --boards zen3-focused \
     --apply dl,build,per-package,nested \
     "$@"

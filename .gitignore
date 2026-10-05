@@ -1,0 +1,4 @@
+topic.env
+__pycache__/
+*.pyc
+*.log

@@ -20,12 +20,12 @@
 # weight at that point, not a rollback path worth keeping.
 #
 # Usage: ./update-usb.sh [mountpoint] [--dry-run] [--auto]
-#   TARGET=<buildroot target>   (env var, default: x86_64-focused)
+#   TARGET=<buildroot target>   (env var, default: zen3-focused)
 #   --auto                      skip the confirmation prompt and proceed
 
 set -euo pipefail
 
-TARGET="${TARGET:-x86_64-focused}"
+TARGET="${TARGET:-zen3-focused}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 DRY_RUN=0
@@ -37,7 +37,7 @@ for arg in "$@"; do
         --auto) AUTO=1 ;;
         -h|--help)
             echo "Usage: $0 [mountpoint] [--dry-run] [--auto]"
-            echo "  TARGET=<buildroot target>   env var, default: x86_64-focused"
+            echo "  TARGET=<buildroot target>   env var, default: zen3-focused"
             echo "  --auto                      skip the confirmation prompt and proceed"
             exit 0
             ;;

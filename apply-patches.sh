@@ -4,8 +4,8 @@
 # (board/batocera/x86/local-patches/*.patch) up to date.
 #
 # These patches wire fork-only features into files this repo shares with
-# upstream batocera (e.g. the top-level Config.in, or configgen's
-# importer.py) without committing to them directly, so the shared files
+# upstream batocera (e.g. the top-level Config.in or batocera-system's
+# Config.in) without committing to them directly, so the shared files
 # stay byte-for-byte upstream-clean and merges from batocera-linux:master
 # don't conflict. A single patch file may touch more than one shared file
 # for the same feature (e.g. standalone-mame.patch covers both Config.in

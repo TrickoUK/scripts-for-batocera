@@ -3,7 +3,7 @@
 # refresh-board-es.sh — combination of refresh-board.sh + refresh-es.sh.
 #
 # Run this after changing a board .config option (e.g. adding/removing a
-# BR2_PACKAGE_* line in configs/batocera-x86_64-focused.board) AND the change
+# BR2_PACKAGE_* line in configs/batocera-zen3-focused.board) AND the change
 # also needs the EmulationStation / configgen option pipeline rebuilt to be
 # visible (e.g. the new package is referenced from es_systems.yml,
 # libretroOptions.py, a *.core.yml, or es_features.yml).
@@ -16,9 +16,10 @@
 #      dirclean) so the NEXT build — typically a full image build you kick
 #      off yourself afterwards — rebuilds all of them fresh instead of
 #      reusing stale output:
-#        - batocera-configgen        (runtime option-generation code, and the
-#                                      configgen-defaults*.yml runtime-default
-#                                      core/emulator files)
+#        - batocera-launch + batocera-launch-* (runtime launcher/option code
+#                                      and the per-arch default core/emulator
+#                                      files; batocera-configgen was removed
+#                                      upstream 2026-10-04)
 #        - host-batocera-es-system   (host codegen tool: yml -> es_systems.cfg
 #                                      / es_features.cfg)
 #        - batocera-es-system        (runs the host tool, installs generated
@@ -83,12 +84,29 @@
 # under output/<TARGET>/{staging,target,per-package}/. Run your own full
 # image build separately when ready.
 #
-# Usage: ./refresh-board-es.sh
-#   TARGET=<buildroot target>   (env var, default: x86_64-focused)
+# Usage: ./refresh-board-es.sh [--quick]
+#   TARGET=<buildroot target>   (env var, default: zen3-focused)
+#   --quick, -q  (or QUICK=1)   skip the two "full clean" extras, saving ~3-5 min:
+#                                 - the sweep of ~50 in-repo data packages, and
+#                                 - wiping output/<target>/target.
+#                               Still dircleans the ES/configgen/python-common/
+#                               batocera-launch* packages (stale stamps there
+#                               broke launching entirely — see below), so it is
+#                               safe for iteration builds. Use the FULL refresh
+#                               (no flag) for any image you will test or ship: only
+#                               that guarantees no leftover files from earlier
+#                               builds end up in the rootfs.
 
 set -euo pipefail
 
-TARGET="${TARGET:-x86_64-focused}"
+TARGET="${TARGET:-zen3-focused}"
+QUICK="${QUICK:-}"
+for arg in "$@"; do
+	case "$arg" in
+		--quick|-q) QUICK=1 ;;
+		*) echo "error: unrecognized argument: $arg (usage: $0 [--quick])" >&2; exit 1 ;;
+	esac
+done
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Local-source (OVERRIDE_SRCDIR / python-src) packages have NO stamp dependency
@@ -105,7 +123,6 @@ PACKAGES=(
 	host-python-batocera-common
 	batocera-bezel-overlay
 	batocera-launch
-	batocera-configgen
 	host-batocera-es-system
 	batocera-es-system
 	batocera-emulationstation
@@ -121,17 +138,27 @@ PACKAGES=(
 	batocera-launch-kodi batocera-launch-linuxloader batocera-launch-mupen64plus
 	batocera-launch-openjazz batocera-launch-openjk batocera-launch-openjkdf2
 	batocera-launch-openmohaa batocera-launch-pcsx2 batocera-launch-rpcs3
+	batocera-launch-libretro batocera-launch-libretro-mame batocera-launch-mame
+	batocera-launch-mame-common batocera-launch-xemu-chihiro
+	# fork-only: ares' launcher (configgen was removed upstream 2026-10-04)
+	batocera-launch-ares
 )
 
 # Plus any other local-source (*-custom) package already in this board's build
 # dir, so a newly added python-src package can't be missed. libretro-mame is
 # excluded: it's OVERRIDE_SRCDIR too but a multi-GB, multi-hour rebuild that
 # has its own refresh path (`make libretro-mame-rebuild all`).
+# A build dir can outlive its package (batocera-configgen-custom after upstream
+# deleted configgen, 2026-10-04): dirclean of a package with no .mk is a make
+# error ("No rule to make target"), which would abort this script, so only
+# add names that still have a <name>.mk.
 if [ -d "${REPO_ROOT}/output/${TARGET}/build" ]; then
+	KNOWN_MKS=" $(find "${REPO_ROOT}/package" "${REPO_ROOT}/python-src" -name '*.mk' -printf '%f ' | sed 's/\.mk / /g')"
 	for d in "${REPO_ROOT}/output/${TARGET}/build"/*-custom; do
 		[ -d "$d" ] || continue
 		name="$(basename "$d" -custom)"
 		[ "$name" = "libretro-mame" ] && continue
+		case "${KNOWN_MKS}" in *" ${name#host-} "*) ;; *) echo "==> skipping ${name}: build dir left over, package no longer exists"; continue ;; esac
 		case " ${PACKAGES[*]} " in *" ${name} "*) ;; *) PACKAGES+=("$name") ;; esac
 	done
 fi
@@ -148,6 +175,7 @@ make "${TARGET}-config" BATCH_MODE=1
 # package stopped installing (e.g. batocera-desktopapps' model2emu-config.desktop
 # after upstream dropped model2emu) keeps shipping forever unless the package is
 # dircleaned. All are tiny, so refresh them every time.
+if [ -z "${QUICK}" ]; then
 DATA_PKGS="$(python3 - "${REPO_ROOT}" "${TARGET}" <<'PYEOF'
 import glob, os, re, sys
 root, target = sys.argv[1], sys.argv[2]
@@ -164,6 +192,9 @@ PYEOF
 for n in ${DATA_PKGS}; do
 	case " ${PACKAGES[*]} " in *" ${n} "*) ;; *) PACKAGES+=("$n") ;; esac
 done
+else
+	echo "==> --quick: skipping in-repo data-package sweep (run without --quick before building an image to test or ship)"
+fi
 
 DIRCLEAN_CMD=""
 for pkg in "${PACKAGES[@]}"; do
@@ -181,8 +212,12 @@ make "${TARGET}-build" BATCH_MODE=1 CMD="${DIRCLEAN_CMD}"
 # legacy generator dirs + model2emu leftovers in an image after the launcher
 # migration. Removing target/ makes the next build regenerate it purely from the
 # per-package trees (safe in per-package mode; target-finalize repopulates it).
-echo "==> Removing output/${TARGET}/target so it is regenerated cleanly"
-rm -rf "${REPO_ROOT}/output/${TARGET}/target"
+if [ -z "${QUICK}" ]; then
+	echo "==> Removing output/${TARGET}/target so it is regenerated cleanly"
+	rm -rf "${REPO_ROOT}/output/${TARGET}/target"
+else
+	echo "==> --quick: keeping output/${TARGET}/target (stale leftovers from earlier builds may remain)"
+fi
 
 echo "==> Done. Cleaned output under output/${TARGET}/{staging,target,per-package}/."
 echo "    Build the full image yourself when ready, e.g.: make ${TARGET}-build"

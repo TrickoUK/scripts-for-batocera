@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# rebuild.sh — refresh the ES/configgen pipeline, then do a full image
+# rebuild.sh — refresh the ES/launcher pipeline, then do a full image
 # build for the given target, notifying $NOTIFYTOPIC on completion/failure.
 #
 # Usage: ./rebuild.sh [--batch] [--quick] [--no-fix-stale] [<target>]
@@ -54,11 +54,37 @@
 # per-package trees and copy the current files over any that differ - the
 # same files buildroot would copy in if it rebuilt those packages, so this is
 # the default (made default 2026-09-26; the owner's tree is always the right
-# version). Each refreshed file is listed. --no-fix-stale aborts instead. After a successful build we also check that the
-# image's /usr/bin/retroarch has the same code as per-package/retroarch.
+# version). Each refreshed file is listed. --no-fix-stale aborts instead.
+# After a successful build we also check that the image's /usr/bin/retroarch
+# has the same code as per-package/retroarch.
 # Watched packages: STALE_CHECK_PACKAGES (default "retroarch mesa3d"; mesa3d
 # because the 2026-09-21 Radeon-only Mesa builds shipped a stale libgallium
 # the same way).
+#
+# Stale kernel modules (found 2026-09-26): Buildroot does not rebuild
+# out-of-tree kernel module packages when the kernel version changes. After
+# the 7.1.5 -> 7.2.6 bump, xone, rtl8188eu, rtl8723bu, hid-t150,
+# logitech-trueforce and ayaneo-platform were never rebuilt, so the image
+# shipped their modules only under /lib/modules/7.1.5, which the 7.2.6
+# kernel never loads (the drivers were effectively missing), plus the whole
+# 7.1.5 module tree as dead weight. So before building we abort if any
+# package's .files-list.txt installs into a lib/modules/<version> other than
+# the configured kernel's release, and print the dirclean/rebuild commands.
+# After the build, the check runs again against the regenerated .config (to
+# catch a kernel bump in this very build) and also fails if target/lib/modules
+# has any directory other than the current release. No --fix mode: the fix
+# is a real rebuild of each package against the new kernel.
+#
+# Stale wine-x86 (found 2026-10-05): wine-x86 is a prebuilt tarball on the
+# moving "44-dev" tag, and its dependents (wine-tkg, linuxloader) keep their
+# own per-package snapshot of it. The single target-finalize rsync keeps the
+# FIRST sorted copy, so a stale snapshot shipped 32-bit wine 11.13 against
+# the 11.17 wineserver and every demul game died with "wine client error:0:
+# version mismatch 961/956" (Lindbergh broke the same way earlier). When the
+# target enables wine-x86 we run my-docs/tools/check-wine-x86.sh --pre before
+# building (abort: republished tarball / stale snapshots, it prints which
+# package needs a dirclean) and the full check after (target/ carries the
+# current 32-bit wine). ~5 s each.
 
 set -a
 source "$(dirname "$0")/topic.env"
@@ -154,6 +180,49 @@ check_stale_copies() {
     [ $stale -eq 0 ]
 }
 
+# Kernel release the target is configured for: the built kernel's own
+# kernel.release when it matches .config, else the .config version.
+kernel_release() {
+    local out="$REPO_ROOT/output/$TARGET" ver rel
+    ver="$(sed -n 's/^BR2_LINUX_KERNEL_VERSION="\(.*\)"$/\1/p' "$out/.config" 2>/dev/null)"
+    [ -n "$ver" ] || return 1
+    rel="$(cat "$out/build/linux-$ver/include/config/kernel.release" 2>/dev/null)"
+    echo "${rel:-$ver}"
+}
+
+# Lists packages that installed kernel modules for a kernel other than the
+# configured one (and, with $1=image, stray target/lib/modules/<version>
+# dirs). Prints one line per problem plus fix commands; returns 1 if any.
+check_stale_kernel_modules() {
+    local mode="$1" out="$REPO_ROOT/output/$TARGET" rel f pkg vers d bad=0 pkgs=""
+    rel="$(kernel_release)" || return 0
+    for f in "$out"/build/*/.files-list.txt; do
+        [ -f "$f" ] || continue
+        vers="$(cut -d, -f2- "$f" | sed -n 's#^\./lib/modules/\([^/]*\)/.*#\1#p' | sort -u | grep -vx "$rel")"
+        [ -n "$vers" ] || continue
+        pkg="$(head -n1 "$f" | cut -d, -f1)"
+        echo "  stale kernel modules: $pkg installs for $(echo $vers) (kernel is $rel)"
+        pkgs="$pkgs $pkg"
+        bad=1
+    done
+    if [ "$mode" = image ] && [ -d "$out/target/lib/modules" ]; then
+        for d in "$out"/target/lib/modules/*/; do
+            d="$(basename "$d")"
+            [ "$d" = "$rel" ] && continue
+            echo "  stray module dir in image: target/lib/modules/$d (kernel is $rel)"
+            bad=1
+        done
+    fi
+    if [ -n "$pkgs" ]; then
+        echo "  fix: rebuild each against the current kernel (separate calls - one CMD only dircleans):"
+        for pkg in $pkgs; do
+            echo "    make $TARGET-build CMD=$pkg-dirclean BATCH_MODE=1 && make $TARGET-build CMD=$pkg BATCH_MODE=1"
+        done
+    fi
+    [ $bad -eq 1 ] && echo "  then remove leftover old-version dirs: output/$TARGET/per-package/*/target/lib/modules/<old> and target/lib/modules/<old>"
+    [ $bad -eq 0 ]
+}
+
 # After the build: does the image's retroarch have the same code as the one
 # per-package/retroarch built? (target/ is stripped, so compare .text only.)
 check_image_retroarch() {
@@ -164,6 +233,13 @@ check_image_retroarch() {
     a="$("$objcopy" -O binary --only-section=.text "$out/target/usr/bin/retroarch" /dev/stdout | md5sum)"
     b="$("$objcopy" -O binary --only-section=.text "$out/per-package/retroarch/target/usr/bin/retroarch" /dev/stdout | md5sum)"
     [ "$a" = "$b" ]
+}
+
+# Runs my-docs/tools/check-wine-x86.sh (args passed through) when the target
+# builds wine-x86; returns 0 when it doesn't.
+check_wine_x86() {
+    grep -qx 'BR2_PACKAGE_WINE_X86=y' "$REPO_ROOT/output/$TARGET/.config" 2>/dev/null || return 0
+    TARGET="$TARGET" "$REPO_ROOT/my-docs/tools/check-wine-x86.sh" "$@"
 }
 
 BATCH_MODE="${BATCH_MODE:-}"
@@ -208,6 +284,18 @@ if ! check_stale_copies check; then
     exit 1
 fi
 
+if ! check_stale_kernel_modules; then
+    echo "error: kernel module packages built for an old kernel (see above) - the image would ship drivers the kernel can't load." >&2
+    curl -H "Title: 🕹️ Batocera build aborted 😞" -d "Kernel module packages built for an old kernel - see rebuild log for fix commands" $NOTIFYTOPIC
+    exit 1
+fi
+
+if ! check_wine_x86 --pre; then
+    echo "error: wine-x86 is stale (see FAIL lines above) - the image would ship mismatched 32-bit wine." >&2
+    curl -H "Title: 🕹️ Batocera build aborted 😞" -d "Stale wine-x86 (tarball or wine-tkg/linuxloader snapshot) - see rebuild log" $NOTIFYTOPIC
+    exit 1
+fi
+
 TARGET="$TARGET" ./refresh-board-es.sh $QUICK_FLAG
 
 #PARALLEL_BUILD=y make "${TARGET}-build" BATCH_MODE="$BATCH_MODE" && ./update-usb.sh --auto
@@ -216,6 +304,16 @@ EC=$?
 if [ $EC -eq 0 ] && ! check_image_retroarch; then
     echo "error: the image's /usr/bin/retroarch differs from per-package/retroarch - a stale copy won." >&2
     curl -H "Title: 🕹️ Batocera image has a stale RetroArch 😞" -d "Image built but /usr/bin/retroarch is not the current build - don't install it" $NOTIFYTOPIC
+    exit 1
+fi
+if [ $EC -eq 0 ] && ! check_stale_kernel_modules image; then
+    echo "error: the image has kernel modules for an old kernel (see above)." >&2
+    curl -H "Title: 🕹️ Batocera image has stale kernel modules 😞" -d "Image built but some drivers are for an old kernel - see rebuild log" $NOTIFYTOPIC
+    exit 1
+fi
+if [ $EC -eq 0 ] && ! check_wine_x86; then
+    echo "error: the image's wine-x86 payload is stale (see FAIL lines above)." >&2
+    curl -H "Title: 🕹️ Batocera image has stale wine-x86 😞" -d "Image built but 32-bit wine/Lindbergh files are stale - don't install it" $NOTIFYTOPIC
     exit 1
 fi
 
