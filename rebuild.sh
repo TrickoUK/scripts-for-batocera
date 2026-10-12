@@ -85,6 +85,18 @@
 # building (abort: republished tarball / stale snapshots, it prints which
 # package needs a dirclean) and the full check after (target/ carries the
 # current 32-bit wine). ~5 s each.
+#
+# Status file (added 2026-10-12): output/rebuild.status always holds this
+# run's state, for watchers (agents) that can't rely on the ntfy push.
+# Written atomically (tmp + mv) as one line:
+#   RUNNING pid=<pid> target=<t> started=<iso time>
+#   OK      pid=<pid> target=<t> started=<...> finished=<...> exit=0
+#   FAILED  pid=<pid> target=<t> started=<...> finished=<...> exit=<n> reason=<text>
+# An EXIT trap writes the final line on every exit path (aborts, failed make,
+# post-build image checks, Ctrl-C/SIGTERM/SIGHUP). Only SIGKILL or a power
+# cut can leave it at RUNNING, so a watcher should treat "RUNNING but
+# `kill -0 <pid>` fails" as died-without-status. Wait for completion with:
+#   until ! grep -q '^RUNNING' output/rebuild.status; do sleep 30; done
 
 set -a
 source "$(dirname "$0")/topic.env"
@@ -271,8 +283,32 @@ for arg in "$@"; do
     esac
 done
 
+STATUS_FILE="$REPO_ROOT/output/rebuild.status"
+STATUS_STARTED="$(date -Iseconds)"
+STATUS_REASON=""
+write_status() {
+    mkdir -p "$(dirname "$STATUS_FILE")"
+    echo "$1 pid=$$ target=$TARGET started=$STATUS_STARTED${2:+ $2}" > "$STATUS_FILE.tmp" &&
+        mv -f "$STATUS_FILE.tmp" "$STATUS_FILE"
+}
+on_exit() {
+    local ec=$?
+    if [ $ec -eq 0 ]; then
+        write_status OK "finished=$(date -Iseconds) exit=0"
+    else
+        write_status FAILED "finished=$(date -Iseconds) exit=$ec reason=${STATUS_REASON:-unknown}"
+    fi
+}
+write_status RUNNING
+trap on_exit EXIT
+trap 'STATUS_REASON="interrupted (SIGINT)"; exit 130' INT
+trap 'STATUS_REASON="terminated (SIGTERM)"; exit 143' TERM
+trap 'STATUS_REASON="hangup (SIGHUP)"; exit 129' HUP
+
+STATUS_REASON="docker image check failed"
 ensure_docker_image || exit 1
 [ -n "$CHECK_DOCKER_ONLY" ] && exit 0
+STATUS_REASON=""
 
 if [ -n "$FIX_STALE" ]; then
     check_stale_copies fix
@@ -281,22 +317,27 @@ if ! check_stale_copies check; then
     echo "error: stale per-package copies found (see above) - the image would ship old files." >&2
     echo "       Re-run without --no-fix-stale to refresh them from the owning package." >&2
     curl -H "Title: 🕹️ Batocera build aborted 😞" -d "Stale per-package copies (run rebuild.sh without --no-fix-stale)" $NOTIFYTOPIC
+    STATUS_REASON="aborted: stale per-package copies"
     exit 1
 fi
 
 if ! check_stale_kernel_modules; then
     echo "error: kernel module packages built for an old kernel (see above) - the image would ship drivers the kernel can't load." >&2
     curl -H "Title: 🕹️ Batocera build aborted 😞" -d "Kernel module packages built for an old kernel - see rebuild log for fix commands" $NOTIFYTOPIC
+    STATUS_REASON="aborted: kernel module packages built for an old kernel"
     exit 1
 fi
 
 if ! check_wine_x86 --pre; then
     echo "error: wine-x86 is stale (see FAIL lines above) - the image would ship mismatched 32-bit wine." >&2
     curl -H "Title: 🕹️ Batocera build aborted 😞" -d "Stale wine-x86 (tarball or wine-tkg/linuxloader snapshot) - see rebuild log" $NOTIFYTOPIC
+    STATUS_REASON="aborted: stale wine-x86"
     exit 1
 fi
 
-TARGET="$TARGET" ./refresh-board-es.sh $QUICK_FLAG
+STATUS_REASON="refresh-board-es.sh failed"
+TARGET="$TARGET" ./refresh-board-es.sh $QUICK_FLAG || exit 1
+STATUS_REASON=""
 
 #PARALLEL_BUILD=y make "${TARGET}-build" BATCH_MODE="$BATCH_MODE" && ./update-usb.sh --auto
 make "${TARGET}-build" BATCH_MODE="$BATCH_MODE"
@@ -304,16 +345,19 @@ EC=$?
 if [ $EC -eq 0 ] && ! check_image_retroarch; then
     echo "error: the image's /usr/bin/retroarch differs from per-package/retroarch - a stale copy won." >&2
     curl -H "Title: 🕹️ Batocera image has a stale RetroArch 😞" -d "Image built but /usr/bin/retroarch is not the current build - don't install it" $NOTIFYTOPIC
+    STATUS_REASON="image built but has a stale retroarch - don't install it"
     exit 1
 fi
 if [ $EC -eq 0 ] && ! check_stale_kernel_modules image; then
     echo "error: the image has kernel modules for an old kernel (see above)." >&2
     curl -H "Title: 🕹️ Batocera image has stale kernel modules 😞" -d "Image built but some drivers are for an old kernel - see rebuild log" $NOTIFYTOPIC
+    STATUS_REASON="image built but has stale kernel modules - don't install it"
     exit 1
 fi
 if [ $EC -eq 0 ] && ! check_wine_x86; then
     echo "error: the image's wine-x86 payload is stale (see FAIL lines above)." >&2
     curl -H "Title: 🕹️ Batocera image has stale wine-x86 😞" -d "Image built but 32-bit wine/Lindbergh files are stale - don't install it" $NOTIFYTOPIC
+    STATUS_REASON="image built but has stale wine-x86 - don't install it"
     exit 1
 fi
 
@@ -330,4 +374,6 @@ if [ $EC -eq 0 ]; then
     curl -H "Title: 🕹️ Batocera finished building" -d "Image building finished" $NOTIFYTOPIC
 else
     curl -H "Title: 🕹️ Batocera build failed 😞" -d "Exit code $EC" $NOTIFYTOPIC
+    STATUS_REASON="make ${TARGET}-build failed"
 fi
+exit $EC
