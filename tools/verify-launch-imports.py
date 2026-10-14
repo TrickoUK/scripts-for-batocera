@@ -90,7 +90,9 @@ if a.python:
 
 if a.squashfs:
     out = subprocess.run(['unsquashfs', '-l', a.squashfs], capture_output=True, text=True).stdout
-    packed = set(re.findall(r'site-packages/(batocera_common/\w+)\.py', out))
+    # nested subpackages (batocera_common/dbus/bus.py) and packages themselves
+    # (batocera_common/dbus -> dbus/__init__.py) both count as packed
+    packed = set(re.findall(r'site-packages/(batocera_common/[\w/]+?)(?:/__init__)?\.py$', out, re.M))
     want = {m.replace('.', '/') for m in have if m.startswith('batocera_common.')}
     gone = sorted(want - packed)
     if gone:
