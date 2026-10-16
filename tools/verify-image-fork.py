@@ -56,7 +56,7 @@ chk('lr_pcsx2_pgs_ssaa' in open(os.path.join(lr, 'cores/pcsx2.py')).read(), 'for
 chk('super().__post_init__()' in open(os.path.join(lr, 'emulator.py')).read(), 'Libretro.__post_init__ calls Emulator.__post_init__')
 lm = os.path.join(sp, 'batocera_launch_libretro_mame')
 chk('write_crosshair_config' in open(os.path.join(lm, 'controllers.py')).read(), 'libretro-mame per-driver crosshair cfg writer shipped')
-chk('mame_voodoo_edge_aa' in open(os.path.join(lm, 'core.py')).read(), 'libretro-mame PSX GPU / Voodoo options shipped')
+chk('mame_3d_edge_aa' in open(os.path.join(lm, 'core.py')).read(), 'libretro-mame PSX GPU / 3D options shipped')
 chk("core == 'mame' and" in open(os.path.join(lm, 'command.py')).read(), 'offscreenreload plugin gated to libretro-mame only')
 for so in ('geolith', 'mame', 'fbneo', 'mednafen_psx', 'pcsx2'):
     chk(os.path.exists(os.path.join(t, f'usr/lib/libretro/{so}_libretro.so')), f'{so}_libretro.so shipped')
