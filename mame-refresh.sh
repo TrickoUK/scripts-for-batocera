@@ -1,10 +1,15 @@
 #!/bin/bash
 #
-# Usage: ./mame-refresh.sh [--batch] [<rebuild.sh args>...]
+# Usage: ./mame-refresh.sh [--batch] [--cores N] [<rebuild.sh args>...]
 #   --batch, -b   non-interactive (no TTY) run, e.g. under nohup or an agent's
 #                 shell: passes BATCH_MODE=1 to the libretro-mame make and
 #                 --batch to rebuild.sh. A pre-exported BATCH_MODE=1 does the
-#                 same. Any other arguments go straight to rebuild.sh
+#                 same.
+#   --cores N, -j N  compile with N parallel jobs instead of every core, to
+#                 leave the rest free for other work. Applies to both the
+#                 libretro-mame compile and the image build (passed on to
+#                 rebuild.sh). Default: all cores.
+#                 Any other arguments go straight to rebuild.sh
 #                 (e.g. --quick). Pick the board with TARGET=<target>, which
 #                 both steps read (default zen3-focused).
 set -u
@@ -12,12 +17,40 @@ cd "$(dirname "$0")" || exit 1
 
 BATCH_MODE="${BATCH_MODE:-}"
 REBUILD_ARGS=()
-for arg in "$@"; do
+CORES=""
+while [ $# -gt 0 ]; do
+    arg="$1"
+    shift
     case "$arg" in
         --batch|-b) BATCH_MODE=1 ;;
+        --cores|-j)
+            if [ $# -eq 0 ]; then
+                echo "error: $arg needs a number of cores" >&2
+                exit 1
+            fi
+            CORES="$1"
+            shift
+            ;;
+        --cores=*|-j=*) CORES="${arg#*=}" ;;
         *) REBUILD_ARGS+=("$arg") ;;
     esac
 done
+if [ -n "$CORES" ]; then
+    if ! [[ "$CORES" =~ ^[1-9][0-9]*$ ]]; then
+        echo "error: --cores needs a positive whole number, got '$CORES'" >&2
+        exit 1
+    fi
+    TOTAL_CORES="$(nproc)"
+    if [ "$CORES" -gt "$TOTAL_CORES" ]; then
+        echo "warning: --cores $CORES is more than the $TOTAL_CORES available, using $TOTAL_CORES" >&2
+        CORES="$TOTAL_CORES"
+    fi
+    # the Makefile takes MAKE_JLEVEL/MAKE_LLEVEL from the environment (?=), so
+    # this limits the libretro-mame compile below; rebuild.sh gets it too
+    export MAKE_JLEVEL="$CORES" MAKE_LLEVEL="$CORES"
+    REBUILD_ARGS=(--cores "$CORES" "${REBUILD_ARGS[@]}")
+    echo "Using $CORES of $TOTAL_CORES cores for compilation"
+fi
 [ -n "$BATCH_MODE" ] && REBUILD_ARGS=(--batch "${REBUILD_ARGS[@]}")
 FORK_DIR="/var/mnt/work/batocera-build/libretro-mame"
 
