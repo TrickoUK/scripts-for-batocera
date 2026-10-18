@@ -3,7 +3,7 @@
 # rebuild.sh — refresh the ES/launcher pipeline, then do a full image
 # build for the given target, notifying $NOTIFYTOPIC on completion/failure.
 #
-# Usage: ./rebuild.sh [--batch] [--quick] [--no-fix-stale] [<target>]
+# Usage: ./rebuild.sh [--batch] [--quick] [--cores N] [--no-fix-stale] [<target>]
 #   <target>      buildroot target to build, e.g. zen3-focused (default)
 #                 or x86_64-focused. Passed through to refresh-board-es.sh
 #                 (as TARGET) and used for the `<target>-build` make target.
@@ -18,6 +18,11 @@
 #                 attach stdin to a TTY-enabled container because stdin is
 #                 not a terminal". Omit for a normal interactive terminal
 #                 run.
+#   --cores N, -j N  compile with N parallel jobs instead of every core, to
+#                 leave the rest free for other work (e.g. --cores 12 on a
+#                 16-thread box keeps 4 free). Sets MAKE_JLEVEL (make -j and
+#                 buildroot BR2_JLEVEL) and MAKE_LLEVEL (make -l load cap) to N
+#                 for every make this script runs. Default: all cores (nproc).
 #   --check-docker  only run the Docker image self-check/auto-fix (below),
 #                 then exit without building.
 #   --no-fix-stale  only report stale per-package copies of watched packages
@@ -258,19 +263,32 @@ BATCH_MODE="${BATCH_MODE:-}"
 FIX_STALE=1
 QUICK_FLAG=""
 CHECK_DOCKER_ONLY=""
+CORES=""
 TARGET="${TARGET:-zen3-focused}"
-for arg in "$@"; do
+while [ $# -gt 0 ]; do
+    arg="$1"
+    shift
     case "$arg" in
+        --cores|-j)
+            if [ $# -eq 0 ]; then
+                echo "error: $arg needs a number of cores" >&2
+                exit 1
+            fi
+            CORES="$1"
+            shift
+            ;;
+        --cores=*|-j=*) CORES="${arg#*=}" ;;
         --batch|-b) BATCH_MODE=1 ;;
         --quick|-q) QUICK_FLAG=--quick ;;
         --check-docker) CHECK_DOCKER_ONLY=1 ;;
         --fix-stale) FIX_STALE=1 ;;
         --no-fix-stale) FIX_STALE="" ;;
         -h|--help)
-            echo "Usage: $0 [--batch] [--quick] [--check-docker] [--no-fix-stale] [<target>]"
+            echo "Usage: $0 [--batch] [--quick] [--cores N] [--check-docker] [--no-fix-stale] [<target>]"
             echo "  <target>      buildroot target to build (default: zen3-focused)"
             echo "  --quick, -q   skip target wipe + data-package sweep (faster, not for release images)"
             echo "  --batch, -b   set BATCH_MODE=1 (required for non-interactive/no-TTY runs)"
+            echo "  --cores N, -j N  compile with N parallel jobs (default: all cores), to keep some free"
             echo "  --check-docker  only verify/auto-fix the Docker build image, then exit"
             echo "  --no-fix-stale  abort on stale per-package copies of retroarch/mesa3d instead of refreshing them (default: refresh)"
             exit 0
@@ -282,6 +300,21 @@ for arg in "$@"; do
         *) TARGET="$arg" ;;
     esac
 done
+
+if [ -n "$CORES" ]; then
+    if ! [[ "$CORES" =~ ^[1-9][0-9]*$ ]]; then
+        echo "error: --cores needs a positive whole number, got '$CORES'" >&2
+        exit 1
+    fi
+    TOTAL_CORES="$(nproc)"
+    if [ "$CORES" -gt "$TOTAL_CORES" ]; then
+        echo "warning: --cores $CORES is more than the $TOTAL_CORES available, using $TOTAL_CORES" >&2
+        CORES="$TOTAL_CORES"
+    fi
+    # the Makefile takes MAKE_JLEVEL/MAKE_LLEVEL from the environment (?=)
+    export MAKE_JLEVEL="$CORES" MAKE_LLEVEL="$CORES"
+    echo "Using $CORES of $TOTAL_CORES cores for compilation"
+fi
 
 STATUS_FILE="$REPO_ROOT/output/rebuild.status"
 STATUS_STARTED="$(date -Iseconds)"
